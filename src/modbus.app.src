@@ -1,0 +1,13 @@
+{application, modbus,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib,
+		  exo
+                 ]},
+  {mod, { modbus_app, []}},
+  {env, []}
+ ]}.
