@@ -84,7 +84,7 @@ init(Opts0) ->
     Port = proplists:get_value(port, Opts, ?DEFAULT_TCP_PORT),
     Protocol = proplists:get_value(protocol, Opts, [tcp]),
     UnitID = proplists:get_value(unit_id, Opts, 255),
-    SocketOptions = [{mode,binary},{active,once},{nodelay,true}],
+    SocketOptions = [{mode,binary},{active,once},{nodelay,true},{packet,0}],
     case exo_socket:connect(Host, Port, Protocol, SocketOptions, 5000) of
 	{ok,Socket} ->
 	    Tags = exo_socket:tags(Socket),
@@ -113,14 +113,16 @@ init(Opts0) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call({pdu,Function,Params}, From, State) when is_binary(Params) ->
+handle_call({pdu,Func,Params}, From, State) when is_binary(Params) ->
     TransID = State#state.trans_id,
     ProtoID = State#state.proto_id,
-    Length  = byte_size(Params)+1,
-    Data    = <<TransID:16,ProtoID:16,Length:16,Function,Params/binary>>,
+    UnitID  = State#state.unit_id,
+    Length  = byte_size(Params)+2, %% func,unitid,params
+    Data    = <<TransID:16,ProtoID:16,Length:16,UnitID,Func,Params/binary>>,
+    lager:debug("send data ~p", [Data]),
     exo_socket:send(State#state.socket, Data),
-    Req = {TransID, Function, From },
-    {noreply, State#state { trans_id = TransID+1,
+    Req = {TransID, UnitID, Func, From },
+    {noreply, State#state { trans_id = (TransID+1) band 16#ffff,
 			    requests = [Req | State#state.requests]}};
 handle_call(_Request, _From, State) ->
     {reply, {error,badarg}, State}.
@@ -151,11 +153,24 @@ handle_cast(_Msg, State) ->
 handle_info({Tag,_Socket,Data}, State = #state { tags={Tag,_,_} }) ->
     exo_socket:setopts(State#state.socket, [{active, once}]),
     Buf = <<(State#state.buf)/binary, Data/binary>>,
+    lager:debug("got data ~p", [Buf]),
     case Buf of
-	<<TransID:16, _ProtoID:16, Length:16, Pdu:Length/binary,
+	%% victron bug for error codes?
+	<<TransID:16,_ProtoID:16,2:16,UnitID,1:1,Func:7,Params:1/binary,
 	  Buf1/binary>> ->
-	    State1 = handle_pdu(TransID, Pdu, State#state { buf = Buf1 }),
+	    State1 = handle_pdu(TransID, UnitID, 16#80+Func,
+				Params, State#state { buf = Buf1 }),
 	    {noreply, State1};
+	<<TransID:16,_ProtoID:16,Length:16,Data1:Length/binary,Buf1/binary>> ->
+	    case Data1 of
+		<<UnitID,Func,Params/binary>> ->
+		    State1 = handle_pdu(TransID, UnitID, Func,
+					Params, State#state { buf = Buf1 }),
+		    {noreply, State1};
+		_ ->
+		    lager:debug("data too short ~p", [Buf]),
+		    {noreply, State#state { buf = Buf1 }}
+	    end;
 	_ ->
 	    {noreply, State#state { buf = Buf }}
     end;
@@ -198,20 +213,29 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-handle_pdu(TransID, Pdu, State) ->
+handle_pdu(TransID, UnitID1, Func1, Pdu, State) ->
     case lists:keytake(TransID, 1, State#state.requests) of
 	false ->
 	    lager:warning("transaction ~p not found", [TransID]),
 	    State;
-	{value,{_,Function,From},Reqs} ->
-	    lager:debug("response pdu=~p\n", [Pdu]),
+	{value,{_,UnitID,Func,From},Reqs} when 
+	      UnitID =:= UnitID1; UnitID =:= 255 ->
+	    lager:debug("unit_id=~p,func=~p, matched unit_id=~p,func=~p",
+			[UnitID1,Func1,UnitID,Func]),
 	    case Pdu of
-		<<1:1,Function:7,ErrorCode>> ->
+		<<ErrorCode>> when  Func + 16#80 =:= Func1 ->
 		    gen_server:reply(From, {error, ErrorCode}),
 		    State#state { requests = Reqs };
-		<<Function,Data/binary>> ->
+		Data when Func =:= Func1 ->
 		    %% FIXME: some more cases here
 		    gen_server:reply(From, {ok,Data}),
+		    State#state { requests = Reqs };
+		_ ->
+		    lager:warning("unmatched response pdu ~p", [Pdu]),
+		    gen_server:reply(From, {error, internal}),
 		    State#state { requests = Reqs }
-	    end
+	    end;
+	_ ->
+	    lager:warning("reply from other unit ~p", [Pdu]),
+	    State
     end.
