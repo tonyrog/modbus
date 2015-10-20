@@ -157,6 +157,12 @@ handle_info({Tag,_Socket,Data}, State = #state { tags={Tag,_,_} }) ->
     Buf = <<(State#state.buf)/binary, Data/binary>>,
     lager:debug("got data ~p", [Buf]),
     case Buf of
+	%% victron bug for error codes?
+	<<TransID:16,_ProtoID:16,2:16,UnitID,1:1,Func:7,Params:1/binary,
+	  Buf1/binary>> ->
+	    State1 = handle_pdu(TransID, UnitID, 16#80+Func,
+				Params, State#state { buf = Buf1 }),
+	    {noreply, State1};
 	<<TransID:16,_ProtoID:16,Length:16,Data1:Length/binary,Buf1/binary>> ->
 	    case Data1 of
 		<<UnitID,Func,Params/binary>> ->
