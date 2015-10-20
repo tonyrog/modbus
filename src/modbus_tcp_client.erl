@@ -26,8 +26,6 @@
 
 -behaviour(gen_server).
 
--include_lib("lager/include/log.hrl").
-
 %% API
 -export([start_link/1]).
 
@@ -203,10 +201,10 @@ code_change(_OldVsn, State, _Extra) ->
 handle_pdu(TransID, Pdu, State) ->
     case lists:keytake(TransID, 1, State#state.requests) of
 	false ->
-	    ?warning("transaction ~p not found", [TransID]),
+	    lager:warning("transaction ~p not found", [TransID]),
 	    State;
 	{value,{_,Function,From},Reqs} ->
-	    ?debug("response pdu=~p\n", [Pdu]),
+	    lager:debug("response pdu=~p\n", [Pdu]),
 	    case Pdu of
 		<<1:1,Function:7,ErrorCode>> ->
 		    gen_server:reply(From, {error, ErrorCode}),
