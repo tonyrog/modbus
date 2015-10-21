@@ -27,7 +27,9 @@
 -behaviour(gen_server).
 
 %% API
+-export([start/1]).
 -export([start_link/1]).
+-export([stop/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -62,6 +64,12 @@
 %%--------------------------------------------------------------------
 start_link(Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
+
+start(Opts) ->
+    gen_server:start(?MODULE, Opts, []).
+
+stop(Pid) ->
+    gen_server:call(Pid, stop).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -124,6 +132,8 @@ handle_call({pdu,Func,Params}, From, State) when is_binary(Params) ->
     Req = {TransID, UnitID, Func, From },
     {noreply, State#state { trans_id = (TransID+1) band 16#ffff,
 			    requests = [Req | State#state.requests]}};
+handle_call(stop, _From, State) ->
+    {stop, normal, ok, State};
 handle_call(_Request, _From, State) ->
     {reply, {error,badarg}, State}.
 
