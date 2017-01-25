@@ -144,19 +144,21 @@ init([Socket | Opts]) ->
 %%--------------------------------------------------------------------
 handle_call({pdu,Func,Params}, From, State) 
   when is_binary(Params), State#state.is_active ->
-    TransID = State#state.trans_id,
-    ProtoID = State#state.proto_id,
     UnitID  = State#state.unit_id,
-    Length  = byte_size(Params)+2, %% func,unitid,params
-    Data    = <<TransID:16,ProtoID:16,Length:16,UnitID,Func,Params/binary>>,
-    lager:debug("send data ~p", [Data]),
-    exo_socket:send(State#state.socket, Data),
-    Req = {TransID, UnitID, Func, From },
-    {noreply, State#state { trans_id = (TransID+1) band 16#ffff,
-			    requests = [Req | State#state.requests]}};
+    NewState = handle_send_pdu(UnitID, Func, Params, From, State),
+    {noreply, NewState};
+ handle_call({pdu,UnitID,Func,Params}, From, State) 
+  when is_binary(Params), State#state.is_active ->
+    NewState = handle_send_pdu(UnitID, Func, Params, From, State),
+    {noreply, NewState};
+
 handle_call({pdu,_Func,Params}, _From, State) 
   when is_binary(Params), not State#state.is_active ->
     {reply, {error,not_connected}, State};
+handle_call({pdu,_UnitId,_Func,Params}, _From, State) 
+  when is_binary(Params), not State#state.is_active ->
+    {reply, {error,not_connected}, State};
+
 handle_call(activate, _From, State) ->
     exo_socket:setopts(State#state.socket, [{active, once}]),
     {reply, ok, State#state { is_active = true }};
@@ -197,13 +199,13 @@ handle_info({Tag,_Socket,Data}, State)
 	%% victron bug for error codes?
 	<<TransID:16,_ProtoID:16,2:16,UnitID,1:1,Func:7,Params:1/binary,
 	  Buf1/binary>> ->
-	    State1 = handle_pdu(TransID, UnitID, 16#80+Func,
+	    State1 = handle_reply_pdu(TransID, UnitID, 16#80+Func,
 				Params, State#state { buf = Buf1 }),
 	    {noreply, State1};
 	<<TransID:16,_ProtoID:16,Length:16,Data1:Length/binary,Buf1/binary>> ->
 	    case Data1 of
 		<<UnitID,Func,Params/binary>> ->
-		    State1 = handle_pdu(TransID, UnitID, Func,
+		    State1 = handle_reply_pdu(TransID, UnitID, Func,
 					Params, State#state { buf = Buf1 }),
 		    {noreply, State1};
 		_ ->
@@ -279,8 +281,18 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+handle_send_pdu(UnitID, Func, Params, From, State) ->
+    TransID = State#state.trans_id,
+    ProtoID = State#state.proto_id,
+    Length  = byte_size(Params)+2, %% func,unitid,params
+    Data    = <<TransID:16,ProtoID:16,Length:16,UnitID,Func,Params/binary>>,
+    lager:debug("send data ~p", [Data]),
+    exo_socket:send(State#state.socket, Data),
+    Req = {TransID, UnitID, Func, From },
+    State#state { trans_id = (TransID+1) band 16#ffff,
+		  requests = [Req | State#state.requests]}.
 
-handle_pdu(TransID, UnitID1, Func1, Pdu, State) ->
+handle_reply_pdu(TransID, UnitID1, Func1, Pdu, State) ->
     case lists:keytake(TransID, 1, State#state.requests) of
 	false ->
 	    lager:warning("transaction ~p not found", [TransID]),
