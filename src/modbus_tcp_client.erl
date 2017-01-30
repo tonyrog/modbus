@@ -119,6 +119,7 @@ activate(Pid) ->
 init([Socket | Opts]) ->
     IVal = proplists:get_value(reconnect_interval,Opts, 
 			       ?DEFAULT_RECONNECT_INTERVAL),
+    lager:debug("init options ~p", [Opts]),
     {ok, #state{ is_active = false,
 		 unit_id = proplists:get_value(unit_id, Opts, 255),
 		 reconnect = proplists:get_value(reconnect, Opts, true),
@@ -335,6 +336,7 @@ handle_reconnect(Error, State) ->
 
 connect(Opts0) ->
     Opts = Opts0 ++ application:get_all_env(modbus),
+    lager:debug("connect options ~p", [Opts]),
     Host = proplists:get_value(host, Opts, "localhost"),
     Port = proplists:get_value(port, Opts, ?DEFAULT_TCP_PORT),
     Timeout = proplists:get_value(timeout, Opts, ?DEFAULT_TIMEOUT),

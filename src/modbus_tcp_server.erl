@@ -27,13 +27,14 @@
 -export([init/2, data/3, close/2, error/3, control/4]).
 
 -export([start_link/1]).
+-export([stop/1]).
 
 -include("../include/modbus.hrl").
 
 -record(state,
 	{
 	  proto_id = 0,
-	  unit_id = 255,
+	  unit_ids = [255],
 	  buf = <<>>,
 	  callback
 	}).
@@ -42,21 +43,36 @@
 
 start_link(Opts0) ->
     Opts = Opts0 ++ application:get_all_env(modbus),
+    lager:debug("start options ~p", [Opts]),
     Port = proplists:get_value(port, Opts, ?DEFAULT_TCP_PORT),
     Callback = proplists:get_value(callback, Opts),
-    UnitID = proplists:get_value(unit_id, Opts, 255),
+    UnitIDs = case proplists:get_value(unit_ids, Opts) of
+		  List when is_list(List) -> List;
+		  I when is_integer(I) -> [I];
+		  undefined ->
+		      %% old syntax
+		      case proplists:get_value(unit_id, Opts, 255) of
+			  List when is_list(List) -> List;
+			  I when is_integer(I) -> [I]
+		      end
+	      end,
+    exo_app:start(),
     exo_socket_server:start_link(Port, [tcp],
 				 [{active,once},{mode,binary},
 				  {reuseaddr,true},{nodelay,true}],
-				 ?MODULE, [Callback,UnitID]).
+				 ?MODULE, [Callback,UnitIDs]).
+
+stop(Pid) when is_pid(Pid) ->
+    exo_socket_server:stop(Pid).
 
 %% init(Socket::socket(), Args::[term()] 
 %%   -> {ok,state()} | {stop,reason(),state()}
-init(_Socket, [Callback,UnitID]) ->
+init(_Socket, [Callback,UnitIDs]) ->
+    lager:debug("unit ids ~p", [UnitIDs]),
     {ok, 
      #state{ 
 	callback = Callback,
-	unit_id = UnitID 
+	unit_ids = UnitIDs
        }}.
 
 %% data(Socket::socket(), Data::io_list(), State::state()) 
@@ -66,28 +82,30 @@ data(Socket, Data, State) ->
     case Buf of
 	<<TransID:16,_ProtoID:16,Length:16,Data1:Length/binary, Buf1/binary>> ->
 	    case Data1 of
-		<<UnitID, Func, Params/binary>> when 
-		      State#state.unit_id =:= UnitID;
-		      State#state.unit_id =:= 255 ->
-		    try handle_pdu(Socket,TransID,Func,Params,
-				   State#state { buf = Buf1 }) of
-			State1 ->
-			    {ok, State1}
-		    catch
-			error:_Reason ->
-			    send(Socket,TransID,State#state.proto_id,
-				 State#state.unit_id, 
-				 16#80 + (Func band 16#7f),
-				 <<?SLAVE_DEVICE_FAILURE>>),
-			    {ok, State}
-		    end;
-			    
-		<<_UnitID, _Func, _Params/binary>> ->
-		    lager:warning("pdu not for us", []),
-		    {noreply, State#state { buf = Buf1 }};
+		<<UnitID, Func, Params/binary>> ->
+		    lager:debug("unit_id ~p received, check list ~p",
+				[UnitID, State#state.unit_ids]),
+		    case lists:member(UnitID,State#state.unit_ids) of
+			true ->
+			    try handle_pdu(Socket,UnitID,TransID,Func,Params,
+					   State#state { buf = Buf1 }) of
+				State1 ->
+				    {ok, State1}
+			    catch
+				error:_Reason ->
+				    send(Socket,TransID,State#state.proto_id,
+					 UnitID, 
+					 16#80 + (Func band 16#7f),
+					 <<?SLAVE_DEVICE_FAILURE>>),
+				    {ok, State}
+			    end;
+			false ->
+			    lager:warning("pdu not for us", []),
+			    {ok, State#state { buf = Buf1 }}
+			end;
 		_ ->
 		    lager:warning("pdu too short", []),
-		    {noreply, State#state { buf = Buf1 }}
+		    {ok, State#state { buf = Buf1 }}
 	    end;
 	_ ->
 	    %% FIXME: throw if too big
@@ -120,65 +138,68 @@ control(_Socket, _Request, _From, State) ->
 %%
 %% Handle modbus command
 %%
-handle_pdu(Socket, TransID, ?READ_DISCRETE_INPUTS,<<Addr:16,N:16>>, State) ->
+handle_pdu(Socket, UnitID, TransID, ?READ_DISCRETE_INPUTS,
+	   <<Addr:16,N:16>>, State) ->
     Coils = apply(State#state.callback,read_discrete_inputs,[Addr,N]),
     Bin = modbus:coils_to_bin(Coils),
     Len = byte_size(Bin),
-    send(Socket, TransID, State#state.proto_id, State#state.unit_id, 
+    send(Socket, TransID, State#state.proto_id, UnitID,
 	 ?READ_DISCRETE_INPUTS, <<Len, Bin/binary>>),
     State;
-handle_pdu(Socket, TransID, ?READ_COILS,<<Addr:16,N:16>>, State) ->
+handle_pdu(Socket, UnitID, TransID, ?READ_COILS,
+	   <<Addr:16,N:16>>, State) ->
     Coils = apply(State#state.callback,read_coils,[Addr,N]),
     Bin = modbus:coils_to_bin(Coils),
     Len = byte_size(Bin),
-    send(Socket, TransID, State#state.proto_id, State#state.unit_id,
+    send(Socket, TransID, State#state.proto_id, UnitID,
 	 ?READ_COILS, <<Len, Bin/binary>>),
     State;
-handle_pdu(Socket, TransID, ?WRITE_SINGLE_COIL,<<Addr:16,Value:16>>, State) ->
+handle_pdu(Socket, UnitID, TransID, ?WRITE_SINGLE_COIL,
+	   <<Addr:16,Value:16>>, State) ->
     Value1 = apply(State#state.callback, write_single_coil, [Addr,Value]),
-    send(Socket, TransID, State#state.proto_id, State#state.unit_id, 
+    send(Socket, TransID, State#state.proto_id, UnitID,
 	 ?WRITE_SINGLE_COIL, <<Addr:16, Value1:16>>),
     State;
-handle_pdu(Socket, TransID, ?WRITE_MULTIPLE_COILS, 
+handle_pdu(Socket, UnitID, TransID, ?WRITE_MULTIPLE_COILS, 
 	   <<Addr:16, N:16, _M, Data/binary>>, State) ->
     Coils = modbus:bits_to_coils(N, Data),
     N1 = apply(State#state.callback, write_multiple_coils, [Addr,Coils]),
-    send(Socket, TransID, State#state.proto_id, State#state.unit_id, 
+    send(Socket, TransID, State#state.proto_id, UnitID, 
 	 ?WRITE_MULTIPLE_COILS, <<Addr:16, N1:16>>),
     State;
-handle_pdu(Socket, TransID, ?READ_INPUT_REGISTERS,
+handle_pdu(Socket, UnitID, TransID, ?READ_INPUT_REGISTERS,
 	   <<Addr:16,N:16>>, State) ->
     Regs = apply(State#state.callback, read_input_registers, [Addr,N]),
     RegData = << <<Reg:16>> || Reg <- Regs >>,
     Len = byte_size(RegData),
-    send(Socket, TransID, State#state.proto_id,State#state.unit_id,
+    send(Socket, TransID, State#state.proto_id,UnitID,
 	 ?READ_INPUT_REGISTERS,<<Len, RegData/binary>>), 
     State;
-handle_pdu(Socket, TransID, ?READ_HOLDING_REGISTERS,
+handle_pdu(Socket, UnitID, TransID, ?READ_HOLDING_REGISTERS,
 	   <<Addr:16,N:16>>, State) ->
     Regs = apply(State#state.callback, read_holding_registers, [Addr,N]),
     RegData = << <<Reg:16>> || Reg <- Regs >>,
     Len = byte_size(RegData),
-    send(Socket, TransID, State#state.proto_id,State#state.unit_id,
+    send(Socket, TransID, State#state.proto_id,UnitID,
 	 ?READ_HOLDING_REGISTERS,<<Len, RegData/binary>>), 
     State;
-handle_pdu(Socket, TransID, ?WRITE_SINGLE_HOLDING_REGISTER,
+handle_pdu(Socket, UnitID, TransID, ?WRITE_SINGLE_HOLDING_REGISTER,
 	   <<Addr:16,Value:16>>, State) ->
     Value1 = apply(State#state.callback, write_single_holding_register, 
 		   [Addr,Value]),
-    send(Socket, TransID, State#state.proto_id,  State#state.unit_id,
+    send(Socket, TransID, State#state.proto_id,  UnitID,
 	 ?WRITE_SINGLE_HOLDING_REGISTER, <<Addr:16, Value1:16>>),
     State;
-handle_pdu(Socket, TransID, ?WRITE_MULTIPLE_HOLDING_REGISTERS,
+handle_pdu(Socket, UnitID, TransID, ?WRITE_MULTIPLE_HOLDING_REGISTERS,
 	   <<Addr:16,_N:16,_M,Data/binary>>, State) ->
     Values = [ V ||  <<V:16>> <= Data ], %% check M? and check N!
     N1 = apply(State#state.callback, write_multiple_holding_registers,
 	       [Addr,Values]),
-    send(Socket,TransID, State#state.proto_id,State#state.unit_id,
+    send(Socket,TransID, State#state.proto_id,UnitID,
 	 ?WRITE_MULTIPLE_HOLDING_REGISTERS,<<Addr:16, N1:16>>),
     State;
-handle_pdu(Socket, TransID, Func,<<_/binary>>, State) ->
-    send(Socket,TransID,State#state.proto_id, State#state.unit_id,
+handle_pdu(Socket, UnitID, TransID, Func,<<_/binary>>, State) ->
+    send(Socket,TransID,State#state.proto_id, UnitID,
 	 16#80 + (Func band 16#7f), <<?ILLEGAL_FUNCTION>>).
 
 send(Socket,TransID,ProtoID,UnitID,Func,Bin) ->
