@@ -57,7 +57,7 @@
 	  reconnect_timer,
 	  proto_id = 0,
 	  trans_id = 1,
-	  unit_id  = 255,
+	  default_unit_id, %% Used when no unit id in request
 	  requests = [],
 	  buf = <<>>
 	}).
@@ -121,7 +121,7 @@ init([Socket | Opts]) ->
 			       ?DEFAULT_RECONNECT_INTERVAL),
     lager:debug("init options ~p", [Opts]),
     {ok, #state{ is_active = false,
-		 unit_id = proplists:get_value(unit_id, Opts, 255),
+		 default_unit_id = proplists:get_value(unit_id, Opts, 255),
 		 reconnect = proplists:get_value(reconnect, Opts, true),
 		 reconnect_interval = IVal,
 		 socket=Socket,
@@ -145,7 +145,7 @@ init([Socket | Opts]) ->
 %%--------------------------------------------------------------------
 handle_call({pdu,Func,Params}, From, State) 
   when is_binary(Params), State#state.is_active ->
-    UnitID  = State#state.unit_id,
+    UnitID  = State#state.default_unit_id,
     NewState = handle_send_pdu(UnitID, Func, Params, From, State),
     {noreply, NewState};
  handle_call({pdu,UnitID,Func,Params}, From, State) 
