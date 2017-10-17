@@ -134,26 +134,35 @@ write_multiple_holding_registers(Pid, UnitId, Addr, Values)
 		   Addr, N).
 
 send_read_pdu(Pid, Msg, N) ->
-    case gen_server:call(Pid, Msg) of
+    try gen_server:call(Pid, Msg) of
 	{ok, <<Len,Bin:Len/binary>>} when N =< Len*8 ->
 	    {ok, bits_to_coils(N, Bin)};
 	Error ->
 	    Error
+    catch
+	_Type:Reason ->
+	    {error, Reason}
     end.
 
 send_write_pdu(Pid, Msg, Address, Value) ->
-    case gen_server:call(Pid, Msg) of
+    try gen_server:call(Pid, Msg) of
 	{ok, <<Address:16, Value:16>>} ->
 	    ok;
 	Error -> Error
+    catch
+	_Type:Reason ->
+	    {error, Reason}
     end.
 
 send_read_reg_pdu(Pid, Msg) ->
-    case gen_server:call(Pid, Msg) of
+    try gen_server:call(Pid, Msg) of
 	{ok, <<Len, RegData:Len/binary>>} ->
 	    {ok, [ Reg || <<Reg:16>> <= RegData ]};
 	Error ->
 	    Error
+    catch
+	_Type:Reason ->
+	    {error, Reason}
     end.
 
 bitlist_to_params(BitList) ->
