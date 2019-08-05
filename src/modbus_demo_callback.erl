@@ -34,11 +34,11 @@
 
 read_discrete_inputs(Addr,N) ->
     io:format("demo_callback: read_discrete_inputs: addr=~w, n=~w\n", [Addr,N]),
-    [ (random:uniform(2)-1) || _ <- lists:seq(1, N)].
+    [ (rand:uniform(2)-1) || _ <- lists:seq(1, N)].
 			       
 read_coils(Addr,N) ->
     io:format("demo_callback: read_coils: addr=~w, n=~w\n", [Addr,N]),
-    [ (random:uniform(2)-1) || _ <- lists:seq(1, N)].
+    [ (rand:uniform(2)-1) || _ <- lists:seq(1, N)].
 
 write_single_coil(Addr, Value) ->
     io:format("demo_callback: write_single_coil: addr=~w, value=~w\n", 
@@ -52,12 +52,12 @@ write_multiple_coils(Addr,BitList) ->
 
 read_input_registers(Addr, N) ->
     io:format("demo_callback: read_input_registers: addr=~w, n=~w\n", [Addr,N]),
-    [ (random:uniform(16#10000)-1) || _ <- lists:seq(1, N)].
+    [ (rand:uniform(16#10000)-1) || _ <- lists:seq(1, N)].
 
 read_holding_registers(Addr, N) ->
     io:format("demo_callback: read_holding_registers: addr=~w, n=~w\n", 
 	      [Addr,N]),
-    [ (random:uniform(16#10000)-1) || _ <- lists:seq(1, N)].
+    [ (rand:uniform(16#10000)-1) || _ <- lists:seq(1, N)].
 
 write_single_holding_register(Addr, Value) ->
     io:format("demo_callback: write_single_holding_register: addr=~w, value=~w\n", [Addr,Value]),
