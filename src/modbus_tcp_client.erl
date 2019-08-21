@@ -78,6 +78,7 @@ start_link(Opts) -> do_start(Opts, true).
 start(Opts) -> do_start(Opts, false).
 
 do_start(Opts, Link) when is_list(Opts), is_boolean(Link) ->
+    application:ensure_all_started(exo),
     case connect(Opts) of
 	{ok,Socket} ->
 	    case gen_server:start_link(?MODULE, [Socket|Opts], []) of
