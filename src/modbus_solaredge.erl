@@ -80,14 +80,14 @@ status_items() ->
 	     description = "Length of model block = 50"
 	   },
      #item { label = i_ac_current,
-	     description = "AC Total Current value",
+	     description = "AC Total Current",
 	     address = ?ADDR(72),
 	     type    = uint16,
 	     scale   = {using, ?ADDR(76)},
 	     unit    = "A"
 	   },
      #item { label = i_ac_current_a,
-	     description = "AC Phase A Current value",
+	     description = "AC Phase A Current",
 	     address = ?ADDR(73),
 	     type    = uint16,
 	     scale   = {using, ?ADDR(76)},
@@ -101,7 +101,7 @@ status_items() ->
 	     unit    = "A"
 	   },
      #item { label = i_ac_current_c,
-	     description = "AC Phase C Current value",
+	     description = "AC Phase C Current",
 	     address = ?ADDR(75),
 	     type    = uint16,
 	     scale   = {using, ?ADDR(76)},
@@ -115,42 +115,42 @@ status_items() ->
 	   },
      
      #item { label = i_ac_voltage_ab,
-	     description = "AC Voltage Phase AB value",
+	     description = "AC Voltage Phase A-B",
 	     address = ?ADDR(77),
 	     type    = uint16,
 	     scale   = {using,?ADDR(83)},
 	     unit    = "V"
 	   },
      #item { label = i_ac_voltage_bc,
-	     description = "AC Voltage Phase BC value",
+	     description = "AC Voltage Phase B-C",
 	     address = ?ADDR(78),
 	     type    = uint16,
 	     scale   = {using,?ADDR(83)},
 	     unit    = "V"
 	   },
      #item { label = i_ac_voltage_ca,
-	     description = "AC Voltage Phase CA value",
+	     description = "AC Voltage Phase C-A",
 	     address = ?ADDR(79),
 	     type    = uint16,
 	     scale   = {using,?ADDR(83)},
 	     unit    = "V"
 	   },
      #item { label = i_ac_voltage_an,
-	     description = "AC Voltage Phase A to N value",
+	     description = "AC Voltage Phase A-N",
 	     address = ?ADDR(80),
 	     type    = uint16,
 	     scale   = {using,?ADDR(83)},
 	     unit    = "V"
 	   },
      #item { label = i_ac_voltage_bn,
-	     description = "AC Voltage Phase B to N value",
+	     description = "AC Voltage Phase B-N",
 	     address = ?ADDR(81),
 	     type    = uint16,
 	     scale   = {using,?ADDR(83)},
 	     unit    = "V"
 	   },
      #item { label = i_ac_voltage_cn,
-	     description = "AC Voltage Phase C to N value",
+	     description = "AC Voltage Phase C-N",
 	     address = ?ADDR(82),
 	     type    = uint16,
 	     scale   = {using,?ADDR(83)},
@@ -163,7 +163,7 @@ status_items() ->
 	   },
 
      #item { label = i_ac_power,
-	     description = "AC Power value",
+	     description = "AC Power",
 	     address = ?ADDR(84),
 	     type    = int16,
 	     scale   = {using,?ADDR(85)},
@@ -177,7 +177,7 @@ status_items() ->
 	   },
 
      #item { label = i_ac_frequency,
-	     description = "AC Frequency value",
+	     description = "AC Frequency",
 	     address = ?ADDR(86),
 	     type    = int16,
 	     scale   = {using,?ADDR(87)},
@@ -247,7 +247,7 @@ status_items() ->
 	   },
      
      #item { label = i_dc_current,
-	     description = "DC Current value",
+	     description = "DC Current",
 	     address = ?ADDR(97),
 	     type    = uint16,
 	     scale   = {using,?ADDR(98)},
@@ -255,13 +255,13 @@ status_items() ->
 	   },
 
      #item { label = i_dc_current_sf,
-	     description = "DC Current value Scale factor",
+	     description = "DC Current Scale factor",
 	     address = ?ADDR(98),
 	     type    = int16
 	   },
 
      #item { label = i_dc_voltage,
-	     description = "DC Voltage value",
+	     description = "DC Voltage",
 	     address = ?ADDR(99),
 	     type    = uint16,
 	     scale   = {using,?ADDR(100)},
@@ -293,7 +293,7 @@ status_items() ->
 	     address = ?ADDR(104),
 	     type    = int16,
 	     scale   = {using,?ADDR(107)},
-	     unit    = "W"
+	     unit    = "C"
 	   },
      %% 105, 106?
      #item { label = i_temp_sf,
@@ -313,12 +313,14 @@ status_items() ->
 			 {throttled,5,"Production (curtailed)"},
 			 {shutting_down,6,"Shutting down"},
 			 {fault,7,"Fault"},
-			 {standby,8,"Mainenance/setup"}]}
+			 {standby,8,"Mainenance/setup"}]},
+	     unit = "" %% must have a unit to be displayed
 	   },
      #item { label = i_status_vendor,
 	     description = "Vendor specific Operating State",
 	     address = ?ADDR(109),
-	     type    = uint16
+	     type    = uint16,
+	     unit = "" %% must have a unit to be displayed
 	   }
     ].
 
@@ -362,8 +364,21 @@ show_items(Pid, UnitId, Items) ->
 			      1
 		      end,
 	      Value = maps:get(Item#item.address, Map),
-	      io:format("~s = ~.2f~s\n",
-			[Item#item.label, Value*Scale, Item#item.unit]);
+	      if is_float(Value); is_float(Scale) ->
+		      io:format("~s = ~.2f~s\n",
+				[Item#item.description, 
+				 Value*Scale, Item#item.unit]);
+		 is_integer(Value), is_integer(Scale) ->
+		      io:format("~s = ~w~s\n",
+				[Item#item.description, 
+				 Value*Scale, Item#item.unit]);
+		 is_atom(Value); is_list(Value), Scale =:= 1 ->
+		      io:format("~s = ~s~s\n",
+				[Item#item.description, 
+				 Value, Item#item.unit]);
+		 true ->
+		      ignore
+	      end;
 	 (_Item) ->
 	      ok
       end, Items),
