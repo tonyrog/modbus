@@ -289,7 +289,7 @@ status_items() ->
 	   },
      %% 103?
      #item { label = i_temp_sink,
-	     description = "Head Sink Temperature",
+	     description = "Heat Sink Temperature",
 	     address = ?ADDR(104),
 	     type    = int16,
 	     scale   = {using,?ADDR(107)},

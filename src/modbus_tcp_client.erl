@@ -39,19 +39,17 @@
 -define(DEFAULT_TIMEOUT, 5000).
 -define(DEFAULT_RECONNECT_INTERVAL, 3000).
 
--record(exo_tags,
-	{
-	  data=tcp,
-	  closed=tcp_closed,
-	  error=tcp_error
-	}).
+-define(debug(F,A), ok).
+%% -define(debug(F,A), io:format((F)++"\r\n", (A))).
+
+%%-define(warning(F,A), ok).
+-define(warning(F,A), io:format((F)++"\r\n", (A))).
 
 -record(state,
 	{
 	  socket,
 	  is_active = false,
 	  options = [],
-	  tags  = #exo_tags{},
 	  reconnect = true,
 	  reconnect_interval = ?DEFAULT_RECONNECT_INTERVAL,
 	  reconnect_timer,
@@ -78,12 +76,11 @@ start_link(Opts) -> do_start(Opts, true).
 start(Opts) -> do_start(Opts, false).
 
 do_start(Opts, Link) when is_list(Opts), is_boolean(Link) ->
-    application:ensure_all_started(exo),
     case connect(Opts) of
 	{ok,Socket} ->
 	    case gen_server:start_link(?MODULE, [Socket|Opts], []) of
 		{ok, Pid} ->
-		    ok = exo_socket:controlling_process(Socket, Pid),
+		    ok = gen_tcp:controlling_process(Socket, Pid),
 		    activate(Pid),
 		    if Link -> ok;
 		       true -> unlink(Pid)
@@ -120,14 +117,13 @@ activate(Pid) ->
 init([Socket | Opts]) ->
     IVal = proplists:get_value(reconnect_interval,Opts, 
 			       ?DEFAULT_RECONNECT_INTERVAL),
-    lager:debug("init options ~p", [Opts]),
+    ?debug("init options ~p", [Opts]),
     {ok, #state{ is_active = false,
 		 default_unit_id = proplists:get_value(unit_id, Opts, 255),
 		 reconnect = proplists:get_value(reconnect, Opts, true),
 		 reconnect_interval = IVal,
 		 socket=Socket,
-		 options = Opts,
-		 tags = exo_tags(Socket)
+		 options = Opts
 	       }}.
 
 %%--------------------------------------------------------------------
@@ -162,7 +158,7 @@ handle_call({pdu,_UnitId,_Func,Params}, _From, State)
     {reply, {error,not_connected}, State};
 
 handle_call(activate, _From, State) ->
-    exo_socket:setopts(State#state.socket, [{active, once}]),
+    inet:setopts(State#state.socket, [{active, once}]),
     {reply, ok, State#state { is_active = true }};
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State};
@@ -192,11 +188,10 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({Tag,_Socket,Data}, State)
-  when Tag =:= (State#state.tags)#exo_tags.data ->
-    exo_socket:setopts(State#state.socket, [{active, once}]),
+handle_info({tcp,Socket,Data}, State) when Socket =:= State#state.socket ->
+    inet:setopts(State#state.socket, [{active, once}]),
     Buf = <<(State#state.buf)/binary, Data/binary>>,
-    lager:debug("got data ~p", [Buf]),
+    ?debug("got data ~p", [Buf]),
     case Buf of
 	%% victron bug for error codes?
 	<<TransID:16,_ProtoID:16,2:16,UnitID,1:1,Func:7,Params:1/binary,
@@ -211,22 +206,20 @@ handle_info({Tag,_Socket,Data}, State)
 					Params, State#state { buf = Buf1 }),
 		    {noreply, State1};
 		_ ->
-		    lager:debug("data too short ~p", [Buf]),
+		    ?debug("data too short ~p", [Buf]),
 		    {noreply, State#state { buf = Buf1 }}
 	    end;
 	_ ->
 	    {noreply, State#state { buf = Buf }}
     end;
-handle_info({Tag,_Socket},State) when
-      Tag =:= (State#state.tags)#exo_tags.closed ->
+handle_info({tcp_closed,Socket},State) when Socket =:= State#state.socket ->
     if State#state.reconnect ->
 	    State1 = State#state { socket = undefined, is_active = false },
 	    {noreply, handle_reconnect({error,closed}, State1 )};
        true ->
 	    {stop, closed, State}
     end;
-handle_info({Tag,_Socket,Error},State) 
-  when Tag =:= (State#state.tags)#exo_tags.error ->
+handle_info({tcp_error,Socket,Error},State) when Socket =:= State#state.socket ->
     if State#state.reconnect ->
 	    State1 = State#state { socket = undefined, is_active = false },
 	    {noreply, handle_reconnect({error,Error}, State1)};
@@ -238,21 +231,21 @@ handle_info({timeout,T,reconnect}, State)
     if State#state.socket =:= undefined ->
 	    case connect(State#state.options) of
 		{ok,Socket} ->
-		    exo_socket:setopts(Socket, [{active, once}]),
+		    inet:setopts(Socket, [{active, once}]),
 		    {noreply, State#state { socket=Socket,
 					    is_active = true}};
-		Error ->
-		    lager:debug("unable to open socket ~p", [Error]),
+		_Error ->
+		    ?debug("unable to open socket ~p", [_Error]),
 		    Timer = start_timer(State#state.reconnect_interval,
 					reconnect),
 		    {noreply, State#state { reconnect_timer = Timer }}
 	    end;
        true ->
-	    lager:warning("reconnect timeout while socket open",[]),
+	    ?warning("reconnect timeout while socket open",[]),
 	    {noreply,State}
     end;
 handle_info(_Info, State) ->
-    lager:warning("got info ~p", [_Info]),
+    ?warning("got info ~p", [_Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -288,8 +281,8 @@ handle_send_pdu(UnitID, Func, Params, From, State) ->
     ProtoID = State#state.proto_id,
     Length  = byte_size(Params)+2, %% func,unitid,params
     Data    = <<TransID:16,ProtoID:16,Length:16,UnitID,Func,Params/binary>>,
-    lager:debug("send data ~p", [Data]),
-    exo_socket:send(State#state.socket, Data),
+    ?debug("send data ~p", [Data]),
+    gen_tcp:send(State#state.socket, Data),
     Req = {TransID, UnitID, Func, From },
     State#state { trans_id = (TransID+1) band 16#ffff,
 		  requests = [Req | State#state.requests]}.
@@ -297,12 +290,12 @@ handle_send_pdu(UnitID, Func, Params, From, State) ->
 handle_reply_pdu(TransID, UnitID1, Func1, Pdu, State) ->
     case lists:keytake(TransID, 1, State#state.requests) of
 	false ->
-	    lager:warning("transaction ~p not found", [TransID]),
+	    ?warning("transaction ~p not found", [TransID]),
 	    State;
 	{value,{_,UnitID,Func,From},Reqs} when 
 	      UnitID =:= UnitID1; UnitID =:= 255 ->
-	    lager:debug("unit_id=~p,func=~p, matched unit_id=~p,func=~p",
-			[UnitID1,Func1,UnitID,Func]),
+	    ?debug("unit_id=~p,func=~p, matched unit_id=~p,func=~p",
+		   [UnitID1,Func1,UnitID,Func]),
 	    case Pdu of
 		<<ErrorCode>> when  Func + 16#80 =:= Func1 ->
 		    gen_server:reply(From, {error, ErrorCode}),
@@ -312,20 +305,14 @@ handle_reply_pdu(TransID, UnitID1, Func1, Pdu, State) ->
 		    gen_server:reply(From, {ok,Data}),
 		    State#state { requests = Reqs };
 		_ ->
-		    lager:warning("unmatched response pdu ~p", [Pdu]),
+		    ?warning("unmatched response pdu ~p", [Pdu]),
 		    gen_server:reply(From, {error, internal}),
 		    State#state { requests = Reqs }
 	    end;
 	_ ->
-	    lager:warning("reply from other unit ~p", [Pdu]),
+	    ?warning("reply from other unit ~p", [Pdu]),
 	    State
     end.
-
-exo_tags(Socket) ->
-    {Data,Closed,Error} = exo_socket:tags(Socket),
-    #exo_tags { data = Data,
-		closed = Closed,
-		error = Error }.
 
 handle_reconnect(Error, State) ->
     lists:foreach(
@@ -337,13 +324,13 @@ handle_reconnect(Error, State) ->
 
 connect(Opts0) ->
     Opts = Opts0 ++ application:get_all_env(modbus),
-    lager:debug("connect options ~p", [Opts]),
+    ?debug("connect options ~p", [Opts]),
     Host = proplists:get_value(host, Opts, "localhost"),
     Port = proplists:get_value(port, Opts, ?DEFAULT_TCP_PORT),
     Timeout = proplists:get_value(timeout, Opts, ?DEFAULT_TIMEOUT),
-    Protocol = proplists:get_value(protocol, Opts, [tcp]),
+    %% Protocol = proplists:get_value(protocol, Opts, [tcp]),
     SocketOptions = [{mode,binary},{active,false},{nodelay,true},{packet,0}],
-    exo_socket:connect(Host, Port, Protocol, SocketOptions, Timeout).
+    gen_tcp:connect(Host, Port, SocketOptions, Timeout).
 
 start_timer(undefined, _Tag) ->
     undefined;

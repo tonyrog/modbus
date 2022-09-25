@@ -1,12 +1,11 @@
 {application, modbus,
  [
-  {description, ""},
+  {description, "Modbus client/server for Erlang"},
   {vsn, git},
-  {registered, []},
+  {modules, ["@@MODULES@@"]},  
   {applications, [
                   kernel,
-                  stdlib,
-		  exo
+                  stdlib
                  ]},
   {mod, { modbus_app, []}},
   {env, []}
