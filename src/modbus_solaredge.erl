@@ -24,11 +24,11 @@
 -define(BASE, 40000-1).
 -define(ADDR(I), (?BASE+(I))).
 
-open() ->
-    open("192.168.2.89").
-
 open(Host) ->
     modbus_tcp_client:start_link([{port,1502},{host,Host}]).
+
+close(Pid) ->
+    modbus_tcp_client:stop(Pid).
 
 info_items() ->
     [
@@ -348,10 +348,14 @@ read_items(Pid, UnitId, Items) ->
     decode_items(Items, StartAddr, Bin).
 
 show_items(Pid, UnitId, Items) ->
+    Values = read_items(Pid, UnitId, Items),
+    show_items_list(Items, Values).
+
+show_items_list(Items, Values) ->
     Map = lists:foldl(
       fun({_Label,Addr,Value}, Mi) ->
 	      Mi# { Addr => Value }
-      end, #{}, read_items(Pid, UnitId, Items)),
+      end, #{}, Values),
     lists:foreach(
       fun(Item) when Item#item.unit =/= undefined ->
 	      Scale = case Item#item.scale of

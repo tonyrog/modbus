@@ -48,6 +48,9 @@
 -record(state,
 	{
 	  socket,
+	  protocol = [tcp], %% [tcp] | [udp]
+	  dstip,
+	  dstport,
 	  is_active = false,
 	  options = [],
 	  reconnect = true,
@@ -76,11 +79,20 @@ start_link(Opts) -> do_start(Opts, true).
 start(Opts) -> do_start(Opts, false).
 
 do_start(Opts, Link) when is_list(Opts), is_boolean(Link) ->
-    case connect(Opts) of
+    Host = proplists:get_value(host, Opts, "localhost"),
+    {ok,DstIP} = inet:ip(Host),
+    Port = proplists:get_value(port, Opts, ?DEFAULT_TCP_PORT),
+    case connect(DstIP,Port,Opts) of
 	{ok,Socket} ->
-	    case gen_server:start_link(?MODULE, [Socket|Opts], []) of
+	    Opts1 = [{ip,DstIP}|Opts],
+	    case gen_server:start_link(?MODULE, [Socket|Opts1], []) of
 		{ok, Pid} ->
-		    ok = gen_tcp:controlling_process(Socket, Pid),
+		    case proplists:get_value(protocol, Opts, [tcp]) of
+			[tcp] ->
+			    ok = gen_tcp:controlling_process(Socket, Pid);
+			[udp] ->
+			    ok = gen_udp:controlling_process(Socket, Pid)
+		    end,
 		    activate(Pid),
 		    if Link -> ok;
 		       true -> unlink(Pid)
@@ -117,8 +129,13 @@ activate(Pid) ->
 init([Socket | Opts]) ->
     IVal = proplists:get_value(reconnect_interval,Opts, 
 			       ?DEFAULT_RECONNECT_INTERVAL),
+    DstIP = proplists:get_value(ip, Opts),
+    DstPort = proplists:get_value(port, Opts),
     ?debug("init options ~p", [Opts]),
     {ok, #state{ is_active = false,
+		 protocol = proplists:get_value(protocol, Opts, [tcp]),
+		 dstip = DstIP,
+		 dstport = DstPort,
 		 default_unit_id = proplists:get_value(unit_id, Opts, 255),
 		 reconnect = proplists:get_value(reconnect, Opts, true),
 		 reconnect_interval = IVal,
@@ -188,30 +205,21 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({tcp,Socket,Data}, State) when Socket =:= State#state.socket ->
+handle_info({tcp,Socket,Data}, State) when 
+      Socket =:= State#state.socket ->
     inet:setopts(State#state.socket, [{active, once}]),
-    Buf = <<(State#state.buf)/binary, Data/binary>>,
-    ?debug("got data ~p", [Buf]),
-    case Buf of
-	%% victron bug for error codes?
-	<<TransID:16,_ProtoID:16,2:16,UnitID,1:1,Func:7,Params:1/binary,
-	  Buf1/binary>> ->
-	    State1 = handle_reply_pdu(TransID, UnitID, 16#80+Func,
-				Params, State#state { buf = Buf1 }),
-	    {noreply, State1};
-	<<TransID:16,_ProtoID:16,Length:16,Data1:Length/binary,Buf1/binary>> ->
-	    case Data1 of
-		<<UnitID,Func,Params/binary>> ->
-		    State1 = handle_reply_pdu(TransID, UnitID, Func,
-					Params, State#state { buf = Buf1 }),
-		    {noreply, State1};
-		_ ->
-		    ?debug("data too short ~p", [Buf]),
-		    {noreply, State#state { buf = Buf1 }}
-	    end;
-	_ ->
-	    {noreply, State#state { buf = Buf }}
-    end;
+    handle_data(Data, State);
+handle_info({udp,Socket,DstIP,DstPort,Data}, State) when 
+      Socket =:= State#state.socket ->
+    if DstIP =:= State#state.dstip,
+       DstPort =:= State#state.dstport ->
+	    ok;
+       true ->
+	    io:format("udp ip/port ~w:~w mismatch\n", 
+		      [DstIP, DstPort])
+    end,
+    inet:setopts(State#state.socket, [{active, once}]),
+    handle_data(Data, State);
 handle_info({tcp_closed,Socket},State) when Socket =:= State#state.socket ->
     if State#state.reconnect ->
 	    State1 = State#state { socket = undefined, is_active = false },
@@ -229,7 +237,8 @@ handle_info({tcp_error,Socket,Error},State) when Socket =:= State#state.socket -
 handle_info({timeout,T,reconnect}, State) 
   when T =:= State#state.reconnect_timer ->
     if State#state.socket =:= undefined ->
-	    case connect(State#state.options) of
+	    case connect(State#state.dstip, State#state.dstport,
+			 State#state.options) of
 		{ok,Socket} ->
 		    inet:setopts(Socket, [{active, once}]),
 		    {noreply, State#state { socket=Socket,
@@ -276,13 +285,45 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+handle_data(Data, State) ->
+    Buf = <<(State#state.buf)/binary, Data/binary>>,
+    ?debug("got data ~p", [Buf]),
+    case Buf of
+	%% victron bug for error codes?
+	<<TransID:16,_ProtoID:16,2:16,UnitID,1:1,Func:7,Params:1/binary,
+	  Buf1/binary>> ->
+	    State1 = handle_reply_pdu(TransID, UnitID, 16#80+Func,
+				Params, State#state { buf = Buf1 }),
+	    {noreply, State1};
+	<<TransID:16,_ProtoID:16,Length:16,Data1:Length/binary,Buf1/binary>> ->
+	    case Data1 of
+		<<UnitID,Func,Params/binary>> ->
+		    State1 = handle_reply_pdu(TransID, UnitID, Func,
+					Params, State#state { buf = Buf1 }),
+		    {noreply, State1};
+		_ ->
+		    ?debug("data too short ~p", [Buf]),
+		    {noreply, State#state { buf = Buf1 }}
+	    end;
+	_ ->
+	    {noreply, State#state { buf = Buf }}
+    end.
+
 handle_send_pdu(UnitID, Func, Params, From, State) ->
     TransID = State#state.trans_id,
     ProtoID = State#state.proto_id,
     Length  = byte_size(Params)+2, %% func,unitid,params
     Data    = <<TransID:16,ProtoID:16,Length:16,UnitID,Func,Params/binary>>,
     ?debug("send data ~p", [Data]),
-    gen_tcp:send(State#state.socket, Data),
+    case State#state.protocol of
+	[tcp] ->
+	    gen_tcp:send(State#state.socket, Data);
+	[udp] ->
+	    gen_udp:send(State#state.socket, 
+			 State#state.dstip, State#state.dstport,
+			 Data)
+    end,
     Req = {TransID, UnitID, Func, From },
     State#state { trans_id = (TransID+1) band 16#ffff,
 		  requests = [Req | State#state.requests]}.
@@ -322,15 +363,18 @@ handle_reconnect(Error, State) ->
     Timer = start_timer(State#state.reconnect_interval, reconnect),
     State#state { reconnect_timer = Timer, requests = [], buf = <<>> }.
 
-connect(Opts0) ->
+connect(IP,Port,Opts0) ->
     Opts = Opts0 ++ application:get_all_env(modbus),
     ?debug("connect options ~p", [Opts]),
-    Host = proplists:get_value(host, Opts, "localhost"),
-    Port = proplists:get_value(port, Opts, ?DEFAULT_TCP_PORT),
     Timeout = proplists:get_value(timeout, Opts, ?DEFAULT_TIMEOUT),
-    %% Protocol = proplists:get_value(protocol, Opts, [tcp]),
     SocketOptions = [{mode,binary},{active,false},{nodelay,true},{packet,0}],
-    gen_tcp:connect(Host, Port, SocketOptions, Timeout).
+    case proplists:get_value(protocol, Opts, [tcp]) of
+	[tcp]->
+	    gen_tcp:connect(IP, Port, SocketOptions, Timeout);
+	[udp] ->
+	    SrcPort = proplists:get_value(srcport, Opts, 0),
+	    gen_udp:open(SrcPort)
+    end.
 
 start_timer(undefined, _Tag) ->
     undefined;
